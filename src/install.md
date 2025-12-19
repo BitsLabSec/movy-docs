@@ -1,4 +1,4 @@
-# Installtion
+# Installation
 
 Depending on your usage, you could use movy in several ways.
 
