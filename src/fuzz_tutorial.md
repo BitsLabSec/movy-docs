@@ -52,7 +52,7 @@ This allows your code to interact with Movy.
 
 ## Deploy Your Package
 
-The very first step is deploying your packages. Add these lines in `tests/movy.move` with the target package.
+The very first step is deploying the target packages. In the `counter` example above, Movy need at least one `Counter` object so that we could test the functions. To create shared objects (and possibly do other setup), add these lines in `tests/movy.move` with the target package.
 
 > Note the Movy modules are organized as unit tests and will only exist in the local emulated environment. It is worth mentioning that Sui rejects any testing modules or testing functions.
 
