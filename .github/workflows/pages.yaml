@@ -33,5 +33,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy book --project-name movy-docs-pages --branch main
+          command: pages deploy book --project-name movy-docs-page --branch main
           
