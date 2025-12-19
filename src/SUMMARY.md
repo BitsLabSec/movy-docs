@@ -1,6 +1,10 @@
 # Summary
 
-- [Installation](./intro.md)
+[Introduction](./intro.md)
+- [Installation](./install.md)
+
+# Usage
+
 - [Static Analysis]()
 - [Fuzz Testing]()
   - [Tutorial]()
