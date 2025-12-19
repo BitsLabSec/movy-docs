@@ -8,7 +8,7 @@
 
 - [Static Analysis]()
 - [Fuzz Testing]()
-  - [Tutorial]()
+  - [Tutorial](fuzz_tutorial.md)
 
 # Roadmap
 

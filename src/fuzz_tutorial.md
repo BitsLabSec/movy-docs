@@ -1,0 +1,161 @@
+# A Tour of Invariant Testing
+
+This chapter will cover the invariant testing step by step.
+
+Please ensure you have installed Movy following our [instructions](./install.md).
+
+The code sample could be found at [here](https://github.com/BitsLabSec/movy/tree/master/test-data/counter). We will use the Sui flavor in this tutorial.
+
+## Code Under Testing
+
+Assume a small code snippet that maintains a counter:
+
+```move
+module counter::counter;
+
+public struct Counter has key {
+    id: UID,
+    value: u64
+}
+
+public fun create(ctx: &mut TxContext) {
+    let counter = Counter {
+        id: object::new(ctx),
+        value: 1
+    };
+    transfer::share_object(counter);
+}
+
+public fun increment(counter: &mut Counter, n: u64) {
+    counter.value = counter.value + n;
+}
+
+public fun value(counter: &Counter): u64 {
+    counter.value
+}
+```
+
+In general, every object shared by this modules contains a `u64` value. It is obvious that **the value is always positive** and now we would like to verify this via Movy.
+
+## Add Movy
+
+First, we add the following lines to the `Move.toml`.
+
+```toml
+[dev-dependencies]
+movy = {git = "https://github.com/BitsLabSec/movy", subdir = "move/movy", rev = "master"}
+```
+
+This allows your code to interact with Movy.
+
+> Note the Movy dependency is added to `dev-dependencies`, i.e. the Movy code will never really go live and does not affect the integrity of the existing modules.
+
+## Deploy Your Package
+
+The very first step is deploying your packages. Add these lines in `tests/movy.move` with the target package.
+
+> Note the Movy modules are organized as unit tests and will only exist in the local emulated environment. It is worth mentioning that Sui rejects any testing modules or testing functions.
+
+```move
+#[test_only]
+module counter::counter_tests;
+
+use sui::test_scenario::{Self as ts};
+use counter::counter::{Self, Counter};
+use sui::bag::Self;
+
+#[test]
+public fun movy_init(
+    deployer: address,
+    attacker: address
+) {
+    let mut scenario = ts::begin(deployer);
+    {
+        ts::next_tx(&mut scenario, deployer);
+        counter::create(ts::ctx(&mut scenario));
+    };
+
+    ts::next_tx(&mut scenario, attacker);
+    {
+        let mut counter_val = ts::take_shared<Counter>(&scenario);
+        counter::increment(&mut counter_val, 0);
+        ts::return_shared(counter_val);
+    };
+
+    ts::end(scenario);
+}
+```
+
+We will break down the code snippet:
+
+- `#[test_only]` ensures that the module itself will never be used in a production environment and enables [test_scenario](https://github.com/MystenLabs/sui/blob/main/crates/sui-framework/packages/sui-framework/sources/test/test_scenario.move), which further allows us to do **multi transaction** deployment.
+- `movy_init` is a special function in Movy that will be called after the module is deployed. The `deployer` will be the one that deployed **the target module**, in this case, the `counter` module while the `attacker` will be the one trying to attack the module. In general, a `movy_init` should always transfer administration capabilities to `deployer` while grants minimal permission to `attacker` for a real-world scenario.
+- `ts::begin`, `ts::next_tx` and `ts::end` starts a multi-transaction testing scenario.
+- `ts::take_shared` and `ts::return_shared` create a shared object and use it immediately with `increment`, which will _only_ works in a testing module with `testing_scenario`. This essentially simulates two transactions of the deployment because shared objects are not possible to create and use within a single transaction.
+
+Movy will call `movy_init` during fuzzing and `movy_init` is supposed to setup the target modules. All changes will be captures and the shared objects created will be used in the following fuzzing campaign.
+
+If nothing special is needed, `movy_init` could be omitted or empty.
+
+## Write First Movy Test
+
+A Movy test has some special setup compared to ordinary Move tests. The following code presents a minimal Movy test in file `tests/movy.move`.
+
+```Move
+use movy::oracle::crash_because;
+
+#[test]
+fun extract_counter(ctr: &Counter): (ID, u64) {
+    let val = counter::value(ctr);
+    let ctr_id = sui::object::id(ctr);
+    (ctr_id, val)
+}
+
+#[test]
+public fun movy_pre_increment(
+    movy: &mut context::MovyContext,
+    ctr: &mut Counter,
+    _n: u64
+) {
+    let (ctr_id, val) = extract_counter(ctr);
+    let state = context::borrow_mut_state(movy);
+    bag::add(state, ctr_id, val);
+}
+
+#[test]
+public fun movy_post_increment(
+    movy: &mut context::MovyContext,
+    ctr: &mut Counter,
+    n: u64
+) {
+    let (ctr_id, new_val) = extract_counter(ctr);
+    let state = context::borrow_state(movy);
+    let previous_val = bag::borrow<ID, u64>(state, ctr_id);
+    if (*previous_val + n != new_val) {
+        crash_because(b"Increment does not correctly inreases internal value.".to_string());
+    }
+}
+```
+
+Again, we can break down the code:
+
+- `movy_pre_increment` and `movy_post_increment` are special functions that tell Movy to call them before and after `increment` function. In other words, if Movy initiates a call to `counter::increment`, it will inserts the two functions calls to make the transaction sequence like `[movy_pre_increment, counter::increment, movy_post_increment]`. Movy identifies such functions with a pattern like `movy_pre_*` and `movy_post_*`.
+- `context::MovyContext` is a fresh wrapper of `sui::bag::Bag` that allows users to store any context. In this case, we store the value before increment. It should be always the first argument of the `movy_pre_` and `movy_post_` functions.
+- `ctr: &mut Counter, n: u64` is the original signature of the `counter::increment`.
+- `movy::oracle::crash_because` will inform Movy that an invariant violation happens and Movy will capture the seed as a crash.
+- The core logic of the invariant is that, before the `counter::increment` call, we store the value in `movy_pre_increment`. After the `counter::increment` call, we get the value and check if the value exactly increases by `n`. If not, `movy::oracle::crash_because` will tell Movy to save this seed.
+
+## Run Movy
+
+Finally, it is time to test the invariants we just wrote:
+
+```bash
+RUST_LOG=info ./target/release/movy sui fuzz
+    -l ./test-data/counter
+    -o /tmp/out
+```
+
+- `RUST_LOG=info` will print some helpful logs.
+- `-l ./test-data/counter` points to the target package with the Movy test modules.
+
+This shall work, but not really trigger a crash because the invariant always holds. You might simply modify the counter code from `counter.value = counter.value + n;` to something like `counter.value = counter.value + 1;` and rerun to see crashes happening.
