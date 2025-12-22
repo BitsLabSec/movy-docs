@@ -15,8 +15,10 @@ This shall print the help menu of Movy.
 Additionally, you could also build `Movy` locally.
 
 ```bash
-# Install dependencies
-apt install -y libssl-dev libclang-dev
+# Install dependencies on Ubuntu/Debian
+apt install -y libssl-dev libclang-dev libz3-dev
+# Install dependencies on macOS
+brew install z3
 
 # Build movy
 git clone https://github.com/BitsLabSec/movy
