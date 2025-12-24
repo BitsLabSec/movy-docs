@@ -157,5 +157,87 @@ RUST_LOG=info ./target/release/movy sui fuzz
 
 - `RUST_LOG=info` will print some helpful logs.
 - `-l ./test-data/counter` points to the target package with the Movy test modules.
+- `-o /tmp/out` will tell Movy to save outputs to `/tmp/out` and we will cover this later.
 
-This shall work, but not really trigger a crash because the invariant always holds. You might simply modify the counter code from `counter.value = counter.value + n;` to something like `counter.value = counter.value + 1;` and rerun to see crashes happening.
+You could see logs like:
+
+```
+[INFO  movy_replay::env] Committing testing std 0x000000000000000000000000000000000000000000000000000000000000000b
+[INFO  movy_replay::env] Committing testing std 0x0000000000000000000000000000000000000000000000000000000000000001
+[INFO  movy_replay::env] Committing testing std 0x0000000000000000000000000000000000000000000000000000000000000002
+[INFO  movy_replay::env] Committing testing std 0x0000000000000000000000000000000000000000000000000000000000000003
+...
+[INFO  movy::sui::env] Deploying the local package at ./test-data/counter/
+[INFO  movy_replay::env] Compiling ./test-data/counter/ with test mode...
+[INFO  movy_replay::env] Detected a movy_init at: 0x9ae10865d456c2a9ebc47b754db3f77b96eebb049192a26fce0577aaca3a5e2a::counter_tests
+[INFO  movy_replay::env] Commiting movy_init effects...
+...
+[INFO  movy_fuzz::operations::sui_fuzz] [Client Heartbeat #0] run time: 33s, clients: 1, corpus: 3, objectives: 0, executions: 326, exec/sec: 9.632, code-fb: 68/16384 (0%), stability: 1/1 (100%)
+```
+
+Generally, Movy does the following things to test the contracts.
+
+- First, Movy will spin up an empty fork of the Chain, in this case, the Sui chain.
+- Movy will deploy the Sui standard framework to the fork in the testing mode, which enables the `0x1::unit_test` and `0x2::test_scenario`.
+- Then Movy will invoke the Move compiler to compile the given project `./test-data/counter` to obtain modules and their interfaces.
+- Movy further will deploy the modules to our fork (at `0x9ae10865d456c2a9ebc47b754db3f77b96eebb049192a26fce0577aaca3a5e2a`) and execute `movy_init` in the testing modules.
+- Once everything is ready, Movy starts to assemble random transactions. Gnerally, the `corpus` metrics indicates the number of interesting inputs, the `objectives` indicates the number of crashing inputs that violate invariants and `code-fb` refers to the code coverage.
+
+## Trigger a Violation
+
+The fuzzing in the previous section shall work, but not really trigger a crash because the invariant always holds. Now let's manually add a bug for our counter implementation:
+
+```
+public fun increment(counter: &mut Counter, n: u64) {
+-    counter.value = counter.value + n;
++    counter.value = counter.value + 1;
+}
+```
+
+Note we intentionally broke the invariant: only increase `1` though users request to increas `n`. Rerun Movy with the project and we could see:
+
+```
+...
+[INFO  movy_fuzz::operations::sui_fuzz] [Objective #0] run time: 24s, clients: 1, corpus: 2, objectives: 3, executions: 247, exec/sec: 10.27, code-fb: 104/16384 (0%), stability: 1/1 (100%), crash-fb: 118/16384 (0%)
+```
+
+> In case you see errors like "The given output is already there....", rerun Movy with `-f` parameter to automatically remove the existing results. The mechanism is to prevent accidental removal of previous fuzzing campaigns.
+
+Movy immediately could find a `objectives` and this indicates that we found the violations.
+
+## Replay and Inspect a Violation
+
+In addition to finding violations, Movy also supports inspect how violation happens by _replaying the violations_. Recall that we have the `-o /tmp/out` option to Movy to save outputs to `/tmp/out` and it is time to see the contents.
+
+```bash
+> ls /tmp/out
+args.json  crashes/  env.bin  fuzz_meta.json  queue/
+```
+
+- `args.json` is the arguments that start Movy, i.e., the CLI parameters.
+- `fuzz_meta.json` is the metadata we setup for the fuzzing campaign, including the target contracts and their interfaces.
+- `env.bin` is a binary file that holds our forked chain contents.
+- `queue/` saves the interesting seeds and we can ignore it in this tutorial.
+- `crashes/` saves the violations Movy have found.
+
+Since we have found some violations, we shall have at least `crashes/0.json` and we can replay it by providing the saved environment:
+
+```
+RUST_LOG=info ./target/release/movy sui replay-seed \
+        -s /tmp/out/crashes/0.json \
+        -e /tmp/out/env.bin \
+        -m /tmp/out/fuzz_meta.json \
+        --trace
+```
+
+> The output of a full trace is usually very long. Saving to a text file and using an editor is highly recommended.
+
+This will print a full trace including everything during execution and we could see that:
+
+```
+├─ 0x977654ad5e98ce5a09b7bbac3421b312aef7370b0bfc889e6181a8bcc23d8b9c:counter_tests:movy_post_increment(...)
+...
+│  └─ 0x977654ad5e98ce5a09b7bbac3421b312aef7370b0bfc889e6181a8bcc23d8b9c:oracle:crash_because(...)
+```
+
+So the invariant violation happens exactly in `movy_post_increment`.
